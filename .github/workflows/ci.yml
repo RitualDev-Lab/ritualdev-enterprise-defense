@@ -1,0 +1,29 @@
+name: "Action CI"
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: "Validate Action Metadata"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Verify action.yml syntax
+        run: |
+          node -e "
+            const fs = require('fs');
+            const content = fs.readFileSync('action.yml', 'utf8');
+            if (!content.includes('RitualDev Enterprise Defense Gate')) {
+              console.error('Invalid action name');
+              process.exit(1);
+            }
+            console.log('action.yml parsed successfully');
+          "

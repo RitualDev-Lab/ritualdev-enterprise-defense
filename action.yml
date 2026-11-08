@@ -1,0 +1,119 @@
+name: 'RitualDev Enterprise Defense Gate'
+description: 'Autonomous Agent Defense & Security Gate: Runs AgentShield sandboxed execution, WebSecAuditor static AST audit, SARIF upload to GitHub Code Scanning, and HTML executive reporting.'
+author: 'RitualDev Studio'
+
+branding:
+  icon: 'shield'
+  color: 'green'
+
+inputs:
+  test-command:
+    description: 'Test command to execute inside the AgentShield isolated container (e.g. npm test, pytest)'
+    required: false
+    default: 'npm test'
+  profile:
+    description: 'AgentShield container isolation profile (strict, balanced, monitor)'
+    required: false
+    default: 'strict'
+  network-policy:
+    description: 'Egress network filter (allow-git-only, loopback-only, air-gapped)'
+    required: false
+    default: 'allow-git-only'
+  sarif-file:
+    description: 'Output filename for OASIS SARIF v2.1.0 vulnerability report'
+    required: false
+    default: 'results.sarif'
+  html-report:
+    description: 'Output filename for executive HTML security audit report'
+    required: false
+    default: 'report.html'
+  fail-on-severity:
+    description: 'Minimum severity to fail the CI build (CRITICAL, HIGH, MEDIUM, LOW, NEVER)'
+    required: false
+    default: 'HIGH'
+  upload-sarif:
+    description: 'Whether to upload SARIF to GitHub Code Scanning'
+    required: false
+    default: 'true'
+  archive-report:
+    description: 'Whether to upload HTML executive report as a workflow artifact'
+    required: false
+    default: 'true'
+  air-gapped:
+    description: 'Enforce strict 100% air-gapped zero outbound telemetry mode'
+    required: false
+    default: 'true'
+
+outputs:
+  sarif-path:
+    description: 'Path to the generated OASIS SARIF v2.1.0 report'
+    value: ${{ inputs.sarif-file }}
+  report-path:
+    description: 'Path to the generated executive HTML security audit report'
+    value: ${{ inputs.html-report }}
+  gate-status:
+    description: 'Overall security gate status (passed, failed)'
+    value: ${{ steps.audit-step.outputs.gate-status }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Configure Air-Gapped Defense Flags
+      shell: bash
+      run: |
+        if [ "${{ inputs.air-gapped }}" = "true" ]; then
+          echo "AGENTSHIELD_AIR_GAPPED=1" >> $GITHUB_ENV
+          echo "DBSHIELD_AIR_GAPPED=1" >> $GITHUB_ENV
+          echo "SKILLPRISM_AIR_GAPPED=1" >> $GITHUB_ENV
+          echo "🛡️ RitualDev running in strict Air-Gapped mode (zero outbound telemetry)."
+        fi
+
+    - name: Execute Sandboxed Test Suite (AgentShield)
+      shell: bash
+      run: |
+        echo "🔒 Running '${{ inputs.test-command }}' confined inside AgentShield '${{ inputs.profile }}' container with '${{ inputs.network-policy }}' egress policy..."
+        npx --yes @ritualdev-lab/agentshield exec \
+          --profile "${{ inputs.profile }}" \
+          --network "${{ inputs.network-policy }}" \
+          -- env CI=true ${{ inputs.test-command }}
+
+    - name: WebSecAuditor Static AST Security Audit
+      id: audit-step
+      if: always()
+      shell: bash
+      run: |
+        echo "🔍 Scanning codebase for hardcoded credentials, AST taint injection, and supply chain threats..."
+        FAIL_FLAG=""
+        if [ "${{ inputs.fail-on-severity }}" != "NEVER" ]; then
+          FAIL_FLAG="--fail-on ${{ inputs.fail-on-severity }}"
+        fi
+
+        npx --yes @ritualdev-lab/web-sec-auditor audit . \
+          --sarif "${{ inputs.sarif-file }}" \
+          --html "${{ inputs.html-report }}" \
+          $FAIL_FLAG \
+          --diff || AUDIT_EXIT=$?
+
+        if [ -z "$AUDIT_EXIT" ] || [ "$AUDIT_EXIT" -eq 0 ]; then
+          echo "gate-status=passed" >> $GITHUB_OUTPUT
+          echo "✅ Security Gate Passed: Zero critical/high AST vulnerabilities found."
+        else
+          echo "gate-status=failed" >> $GITHUB_OUTPUT
+          echo "❌ Security Gate Blocked: Vulnerabilities found exceeding threshold '${{ inputs.fail-on-severity }}'."
+          exit $AUDIT_EXIT
+        fi
+
+    - name: Upload SARIF to GitHub Code Scanning
+      if: always() && inputs.upload-sarif == 'true' && hashFiles(inputs.sarif-file) != ''
+      uses: github/codeql-action/upload-sarif@v3
+      with:
+        sarif_file: ${{ inputs.sarif-file }}
+        category: ritualdev-enterprise-defense
+
+    - name: Archive Executive HTML Report
+      if: always() && inputs.archive-report == 'true' && hashFiles(inputs.html-report) != ''
+      uses: actions/upload-artifact@v4
+      with:
+        name: security-executive-report
+        path: ${{ inputs.html-report }}
+        retention-days: 30
